@@ -2,3 +2,6 @@ flask
 flask-cors
 mysql-connector-python
 pyjwt
+google-genai
+Pillow
+passlib
