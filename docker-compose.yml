@@ -3,11 +3,19 @@ services:
     build: ./backend
     container_name: rdr2_backend
     restart: always
-    # ŽÁDNÉ PORTS ZDE - backend je dostupný jen uvnitř Docker sítě
+    # Backend naslouchá na 5000 uvnitř sítě, ven to nevystavujeme
     expose:
-      - "5000" # Informace pro docker, že na tomto portu poslouchá
+      - "5000"
+    # ZDE PŘEDÁVÁME NASTAVENÍ DO PYTHON CONFIGU
     environment:
-      - FLASK_ENV=production
+      - DB_HOST=192.168.88.21
+      - DB_USER=root
+      - DB_PASSWORD=password
+      - DB_NAME=VORP
+      - DB_PORT=3306
+      - APP_SECRET_KEY=moje-super-tajne-heslo-pro-jwt
+      - GEMINI_API_KEY=ZDE_VLOZ_TVUJ_API_KLIC
+      - GEMINI_MODEL=gemini-2.5-flash-image
     networks:
       - app-network
 
@@ -15,11 +23,14 @@ services:
     build: ./frontend
     container_name: rdr2_frontend
     restart: always
+    # Venkovní port (např. 8080) mapujeme na vnitřní port Nginxu
     ports:
-      # Port je konfigurovatelný přes .env soubor, jinak default 8080
-      - "${APP_PORT:-8080}:80"
+      - "${HOST_PORT:-8080}:${FRONTEND_INTERNAL_PORT:-80}"
     depends_on:
       - backend
+    # ZDE NASTAVUJEME PORT PRO NGINX ŠABLONU
+    environment:
+      - FRONTEND_INTERNAL_PORT=${FRONTEND_INTERNAL_PORT:-80}
     networks:
       - app-network
 

@@ -55,7 +55,7 @@ def token_required(f):
         return f(current_user_id, *args, **kwargs)
     return decorated
 
-# --- LOGIN (s opravou Scrypt) ---
+# --- LOGIN ---
 @app.route('/api/login', methods=['POST'])
 def login():
     data = request.get_json()
@@ -72,29 +72,44 @@ def login():
     conn.close()
 
     if user:
-        # Ověření hashe pomocí Scrypt (passlib)
         try:
-            # Passlib automaticky detekuje nastavení z hashe v DB
             if scrypt.verify(password, user['password']):
                 token = jwt.encode({
                     'user_id': user['id'],
                     'user': user['user'],
                     'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=24)
                 }, SECRET_KEY, algorithm="HS256")
-                
-                return jsonify({
-                    "token": token, 
-                    "user": {"username": user['user']}
-                })
+                return jsonify({"token": token, "user": {"username": user['user']}})
         except Exception as e:
-            print(f"Chyba overeni hesla: {e}")
             pass
     
     return jsonify({"error": "Neplatné údaje"}), 401
 
-# --- GENERATE ENDPOINT (Opravený) ---
-# ... (importy zůstávají stejné)
 
+# --- FUNKCE PRO ODSTRANĚNÍ POZADÍ ---
+def remove_white_background(img, tolerance=240):
+    """
+    Převede bílé (a skoro bílé) pixely na průhledné.
+    tolerance: 0-255 (255 = jen čistě bílá, nižší = bere i světle šedou)
+    """
+    img = img.convert("RGBA")
+    datas = img.getdata()
+
+    newData = []
+    for item in datas:
+        # item je (R, G, B, A)
+        # Pokud jsou všechny složky R, G, B vyšší než tolerance (je to bílá/světlá)
+        if item[0] > tolerance and item[1] > tolerance and item[2] > tolerance:
+            # Změníme Alpha na 0 (průhledná)
+            newData.append((255, 255, 255, 0))
+        else:
+            newData.append(item)
+
+    img.putdata(newData)
+    return img
+
+
+# --- GENERATE ENDPOINT ---
 @app.route('/api/generate', methods=['POST'])
 @token_required
 def generate_icon(current_user_id):
@@ -102,21 +117,45 @@ def generate_icon(current_user_id):
     prompt = data.get('prompt')
     style_mode = data.get('style', 'inventory')
     color_mode = data.get('colorMode', 'bw')
+    output_type = data.get('outputType', 'icon') 
 
     if not prompt:
         return jsonify({'error': 'Chybí prompt'}), 400
 
-    # 1. Sestavení Promptu
+    # 1. Prompt Tuning: Důraz na BÍLÉ pozadí (pro snadné odstranění)
     style_desc = ""
-    if color_mode == 'color':
-        style_desc = "Style: RDR2 catalog illustration. Vintage watercolor aesthetic. Isolated on transparent background. Without decorative borders."
+    requirements = ""
+    
+    if output_type == 'illustration':
+        target_size = (500, 500)
+        if color_mode == 'color':
+            style_desc = (
+                "Style: Detailed illustration in the style of a Wild West newspaper (circa 1870–1890).",
+                "The composition feels like a period news report, with no modern elements and an authentic American Old West atmosphere."
+                "Comix collors."
+            )
+        else:
+            style_desc = (
+                "Style: handdrawn illustration style, hand-drawn shading, lightly worn suitable for journal.",
+                "The composition feels like a period news report, with no modern elements and an authentic American Old West atmosphere."
+                "Highly detailed cross-hatching shading."
+            )
+        # Změna: "Isolated on PURE WHITE background"
+        requirements = "REQUIREMENTS: NO TEXT. Artistic composition. Isolated on PURE WHITE background. No borders."
+        
     else:
-        style_desc = "Style: RDR2 inventory icon. Black woodcut/ink style. High contrast. Thick Lines. Isolated on transparent background."
+        target_size = (100, 100)
+        if color_mode == 'color':
+            style_desc = "Style: RDR2 catalog item. Simple vintage watercolor. Isolated."
+        else:
+            style_desc = "Style: RDR2 inventory icon. Bold black ink, high contrast woodcut. Minimalist."
+        # Změna: "Isolated on PURE WHITE background"
+        requirements = "REQUIREMENTS: NO TEXT. Simple shape. Bold lines. Isolated on PURE WHITE background."
 
-    final_prompt = f"{style_desc} Subject: {prompt}. REQUIREMENTS: NO TEXT. 100% transparent background."
+    final_prompt = f"{style_desc} Subject: {prompt}. {requirements}"
 
     try:
-        print(f"Generuji model: {GEMINI_MODEL}...")
+        print(f"Generuji ({output_type}): {final_prompt[:50]}...")
 
         # 2. Volání API
         response = client.models.generate_content(
@@ -124,35 +163,39 @@ def generate_icon(current_user_id):
             contents=final_prompt
         )
 
-        # 3. Zpracování odpovědi - PŘÍMÝ PŘÍSTUP K DATŮM
         base64_url = None
 
         if response.parts:
             for part in response.parts:
                 if part.inline_data:
-                    # Zde je oprava: Neunavujeme se s PIL.Image wrapperem.
-                    # Vezmeme surová binární data obrázku.
                     raw_bytes = part.inline_data.data
                     
-                    # Zjistíme MIME typ (např. image/png nebo image/jpeg), defaultně png
-                    mime_type = part.inline_data.mime_type or "image/png"
+                    # Načtení do PIL
+                    image = Image.open(io.BytesIO(raw_bytes))
                     
-                    # Zakódujeme bajty do Base64 stringu
-                    img_str = base64.b64encode(raw_bytes).decode("utf-8")
+                    # A. Odstranění bílého pozadí
+                    # Pro BW módy můžeme být agresivnější (tolerance 200), pro barvu opatrnější (240)
+                    bg_tolerance = 200 if color_mode == 'bw' else 240
+                    image_transparent = remove_white_background(image, tolerance=bg_tolerance)
                     
-                    # Vytvoříme hotovou URL pro frontend
-                    base64_url = f"data:{mime_type};base64,{img_str}"
+                    # B. Změna velikosti (LANCZOS pro kvalitu)
+                    image_resized = image_transparent.resize(target_size, Image.Resampling.LANCZOS)
+                    
+                    # C. Export do PNG (nutné pro průhlednost)
+                    buffered = io.BytesIO()
+                    image_resized.save(buffered, format="PNG")
+                    
+                    img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
+                    base64_url = f"data:image/png;base64,{img_str}"
                     break
         
         if not base64_url:
-             # Fallback kontrola textu
-            if response.text:
-                return jsonify({'error': f"Model nevrátil obrázek, ale text: {response.text}"}), 500
-            return jsonify({'error': 'Model nevrátil žádná data.'}), 500
+            return jsonify({'error': 'Model nevrátil data.'}), 500
 
         return jsonify({
             "image": base64_url,
-            "message": "Úspěch"
+            "message": "Úspěch",
+            "type": output_type
         })
 
     except Exception as e:
