@@ -1,0 +1,28 @@
+services:
+  backend:
+    build: ./backend
+    container_name: rdr2_backend
+    restart: always
+    # ŽÁDNÉ PORTS ZDE - backend je dostupný jen uvnitř Docker sítě
+    expose:
+      - "5000" # Informace pro docker, že na tomto portu poslouchá
+    environment:
+      - FLASK_ENV=production
+    networks:
+      - app-network
+
+  frontend:
+    build: ./frontend
+    container_name: rdr2_frontend
+    restart: always
+    ports:
+      # Port je konfigurovatelný přes .env soubor, jinak default 8080
+      - "${APP_PORT:-8080}:80"
+    depends_on:
+      - backend
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
